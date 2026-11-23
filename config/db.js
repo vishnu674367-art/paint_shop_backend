@@ -1,13 +1,24 @@
 const mysql = require("mysql2/promise");
 const bcrypt = require("bcryptjs");
+const fs = require("fs");
 
+const sslOptions = /^true$/i.test(process.env.DB_SSL || "")
+  ? {
+      rejectUnauthorized: true,
+      ...(process.env.DB_SSL_CA
+        ? { ca: fs.readFileSync(process.env.DB_SSL_CA) }
+        : {})
+    }
+  : undefined;
 const dbConfig = {
   host: process.env.DB_HOST || "localhost",
   port: Number(process.env.DB_PORT || 3306),
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || ""
+  password: process.env.DB_PASSWORD || "",
+  ...(sslOptions ? { ssl: sslOptions } : {})
 };
-const databaseName = (process.env.DB_NAME || "paint_shop_db").replace(/[^a-zA-Z0-9_]/g, "");
+const configuredDatabase = process.env.DB_NAME;
+const databaseName = (configuredDatabase || "paint_shop_db").replace(/[^a-zA-Z0-9_]/g, "");
 
 const pool = mysql.createPool({
   ...dbConfig,
@@ -19,9 +30,14 @@ const pool = mysql.createPool({
 });
 
 async function initializeDatabase() {
-  const bootstrap = await mysql.createConnection(dbConfig);
-  await bootstrap.query(`CREATE DATABASE IF NOT EXISTS \`${databaseName}\``);
-  await bootstrap.end();
+  if (!configuredDatabase) {
+    const bootstrap = await mysql.createConnection(dbConfig);
+    try {
+      await bootstrap.query(`CREATE DATABASE IF NOT EXISTS \`${databaseName}\``);
+    } finally {
+      await bootstrap.end();
+    }
+  }
 
   const connection = await pool.getConnection();
   try {
@@ -62,6 +78,7 @@ async function initializeDatabase() {
         stock_qty DECIMAL(12,3) NOT NULL DEFAULT 0,
         reorder_level DECIMAL(12,3) NOT NULL DEFAULT 0,
         description TEXT,
+        image_url TEXT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL,
         FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE SET NULL
@@ -163,6 +180,11 @@ async function initializeDatabase() {
       )`
     ];
     for (const sql of schemas) await connection.query(sql);
+
+    const [imageUrlColumns] = await connection.query("SHOW COLUMNS FROM products LIKE 'image_url'");
+    if (!imageUrlColumns.length) {
+      await connection.query("ALTER TABLE products ADD COLUMN image_url TEXT NULL");
+    }
 
     const email = process.env.ADMIN_EMAIL || "admin@paintshop.com";
     const [admins] = await connection.query("SELECT id FROM users WHERE email = ?", [email]);

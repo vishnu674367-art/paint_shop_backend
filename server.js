@@ -62,6 +62,9 @@ async function startServer() {
     });
   } catch (error) {
     console.error("Startup/Database Error:", error.message);
+    if (error.code === "ENOTFOUND") {
+      console.error("Check DB_HOST against the current hostname shown in your Aiven service's connection information.");
+    }
     process.exit(1);
   }
 }
