@@ -1,15 +1,72 @@
+
 const mysql = require("mysql2/promise");
 const bcrypt = require("bcryptjs");
 const fs = require("fs");
+const path = require("path");
 
-const sslOptions = /^true$/i.test(process.env.DB_SSL || "")
-  ? {
-      rejectUnauthorized: true,
-      ...(process.env.DB_SSL_CA
-        ? { ca: fs.readFileSync(process.env.DB_SSL_CA) }
-        : {})
+// ==========================================
+// DATABASE SSL CONFIGURATION
+// ==========================================
+
+function getSSLConfig() {
+  const sslEnabled = /^true$/i.test(process.env.DB_SSL || "");
+
+  if (!sslEnabled) {
+    return undefined;
+  }
+
+  const sslOptions = {
+    rejectUnauthorized: true
+  };
+
+  const caValue = process.env.DB_SSL_CA;
+
+  if (!caValue) {
+    throw new Error(
+      "DB_SSL is enabled, but DB_SSL_CA is missing. " +
+      "Add your Aiven CA certificate content to Render Environment."
+    );
+  }
+
+  // Option 1: Certificate content directly from environment variable
+  if (caValue.includes("-----BEGIN CERTIFICATE-----")) {
+    sslOptions.ca = caValue.replace(/\\n/g, "\n");
+  } 
+  // Option 2: Certificate file path
+  else {
+    const caPath = path.isAbsolute(caValue)
+      ? caValue
+      : path.resolve(process.cwd(), caValue);
+
+    if (!fs.existsSync(caPath)) {
+      throw new Error(
+        `SSL certificate not found: ${caPath}. ` +
+        "Provide the certificate content in DB_SSL_CA or upload the certificate file."
+      );
     }
-  : undefined;
+
+    sslOptions.ca = fs.readFileSync(caPath, "utf8");
+  }
+
+  return sslOptions;
+}
+
+// ==========================================
+// DATABASE CONFIGURATION
+// ==========================================
+
+const sslOptions = getSSLConfig();
+
+const configuredDatabase = process.env.DB_NAME;
+
+const databaseName = (
+  configuredDatabase || "paint_shop_db"
+).replace(/[^a-zA-Z0-9_]/g, "");
+
+if (!databaseName) {
+  throw new Error("Invalid DB_NAME configuration.");
+}
+
 const dbConfig = {
   host: process.env.DB_HOST || "localhost",
   port: Number(process.env.DB_PORT || 3306),
@@ -17,8 +74,6 @@ const dbConfig = {
   password: process.env.DB_PASSWORD || "",
   ...(sslOptions ? { ssl: sslOptions } : {})
 };
-const configuredDatabase = process.env.DB_NAME;
-const databaseName = (configuredDatabase || "paint_shop_db").replace(/[^a-zA-Z0-9_]/g, "");
 
 const pool = mysql.createPool({
   ...dbConfig,
@@ -29,19 +84,30 @@ const pool = mysql.createPool({
   decimalNumbers: true
 });
 
+// ==========================================
+// INITIALIZE DATABASE
+// ==========================================
+
 async function initializeDatabase() {
+  // Create database if DB_NAME is not configured
   if (!configuredDatabase) {
     const bootstrap = await mysql.createConnection(dbConfig);
+
     try {
-      await bootstrap.query(`CREATE DATABASE IF NOT EXISTS \`${databaseName}\``);
+      await bootstrap.query(
+        `CREATE DATABASE IF NOT EXISTS \`${databaseName}\``
+      );
     } finally {
       await bootstrap.end();
     }
   }
 
   const connection = await pool.getConnection();
+
   try {
     const schemas = [
+
+      // USERS
       `CREATE TABLE IF NOT EXISTS users (
         id INT AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(120) NOT NULL,
@@ -51,18 +117,24 @@ async function initializeDatabase() {
         permissions TEXT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`,
+
+      // CATEGORIES
       `CREATE TABLE IF NOT EXISTS categories (
         id INT AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(120) NOT NULL UNIQUE,
         description TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`,
+
+      // BRANDS
       `CREATE TABLE IF NOT EXISTS brands (
         id INT AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(120) NOT NULL UNIQUE,
         description TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`,
+
+      // PRODUCTS
       `CREATE TABLE IF NOT EXISTS products (
         id INT AUTO_INCREMENT PRIMARY KEY,
         product_name VARCHAR(180) NOT NULL,
@@ -83,6 +155,8 @@ async function initializeDatabase() {
         FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL,
         FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE SET NULL
       )`,
+
+      // CUSTOMERS
       `CREATE TABLE IF NOT EXISTS customers (
         id INT AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(150) NOT NULL,
@@ -91,6 +165,8 @@ async function initializeDatabase() {
         address TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`,
+
+      // SUPPLIERS
       `CREATE TABLE IF NOT EXISTS suppliers (
         id INT AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(150) NOT NULL,
@@ -100,6 +176,8 @@ async function initializeDatabase() {
         gst_number VARCHAR(40),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`,
+
+      // SALES
       `CREATE TABLE IF NOT EXISTS sales (
         id INT AUTO_INCREMENT PRIMARY KEY,
         invoice_no VARCHAR(60) NOT NULL UNIQUE,
@@ -117,6 +195,8 @@ async function initializeDatabase() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL
       )`,
+
+      // SALE ITEMS
       `CREATE TABLE IF NOT EXISTS sale_items (
         id INT AUTO_INCREMENT PRIMARY KEY,
         sale_id INT NOT NULL,
@@ -128,6 +208,8 @@ async function initializeDatabase() {
         FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
       )`,
+
+      // SALE PAYMENTS
       `CREATE TABLE IF NOT EXISTS sale_payments (
         id INT AUTO_INCREMENT PRIMARY KEY,
         sale_id INT NOT NULL,
@@ -140,6 +222,8 @@ async function initializeDatabase() {
         INDEX idx_sale_payments_sale_id (sale_id),
         FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE
       )`,
+
+      // PURCHASES
       `CREATE TABLE IF NOT EXISTS purchases (
         id INT AUTO_INCREMENT PRIMARY KEY,
         purchase_no VARCHAR(60) NOT NULL UNIQUE,
@@ -152,6 +236,8 @@ async function initializeDatabase() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE SET NULL
       )`,
+
+      // PURCHASE ITEMS
       `CREATE TABLE IF NOT EXISTS purchase_items (
         id INT AUTO_INCREMENT PRIMARY KEY,
         purchase_id INT NOT NULL,
@@ -163,6 +249,8 @@ async function initializeDatabase() {
         FOREIGN KEY (purchase_id) REFERENCES purchases(id) ON DELETE CASCADE,
         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
       )`,
+
+      // EXPENSES
       `CREATE TABLE IF NOT EXISTS expenses (
         id INT AUTO_INCREMENT PRIMARY KEY,
         title VARCHAR(180) NOT NULL,
@@ -173,32 +261,77 @@ async function initializeDatabase() {
         notes TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`,
+
+      // APP SETTINGS
       `CREATE TABLE IF NOT EXISTS app_settings (
         setting_key VARCHAR(100) PRIMARY KEY,
         setting_value TEXT,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )`
     ];
-    for (const sql of schemas) await connection.query(sql);
 
-    const [imageUrlColumns] = await connection.query("SHOW COLUMNS FROM products LIKE 'image_url'");
-    if (!imageUrlColumns.length) {
-      await connection.query("ALTER TABLE products ADD COLUMN image_url TEXT NULL");
+    // Create all tables
+    for (const sql of schemas) {
+      await connection.query(sql);
     }
+
+    // Check products image_url column
+    const [imageUrlColumns] = await connection.query(
+      "SHOW COLUMNS FROM products LIKE 'image_url'"
+    );
+
+    if (!imageUrlColumns.length) {
+      await connection.query(
+        "ALTER TABLE products ADD COLUMN image_url TEXT NULL"
+      );
+    }
+
+    // ======================================
+    // DEFAULT ADMIN CREATION
+    // ======================================
 
     const email = process.env.ADMIN_EMAIL || "admin@paintshop.com";
-    const [admins] = await connection.query("SELECT id FROM users WHERE email = ?", [email]);
+
+    const [admins] = await connection.query(
+      "SELECT id FROM users WHERE email = ?",
+      [email]
+    );
+
     if (!admins.length) {
-      const hash = await bcrypt.hash(process.env.ADMIN_PASSWORD || "Admin@123", 10);
+      const adminPassword =
+        process.env.ADMIN_PASSWORD || "Admin@123";
+
+      const hash = await bcrypt.hash(adminPassword, 10);
+
       await connection.query(
-        "INSERT INTO users (name,email,password_hash,role) VALUES (?,?,?,'admin')",
-        [process.env.ADMIN_NAME || "Shop Admin", email, hash]
+        `INSERT INTO users
+        (name, email, password_hash, role)
+        VALUES (?, ?, ?, 'admin')`,
+        [
+          process.env.ADMIN_NAME || "Shop Admin",
+          email,
+          hash
+        ]
       );
+
       console.log(`Default admin created: ${email}`);
     }
+
+    console.log("Database initialized successfully.");
+    
+  } catch (error) {
+    console.error("Database initialization failed:", error);
+    throw error;
   } finally {
     connection.release();
   }
 }
 
-module.exports = { pool, initializeDatabase };
+// ==========================================
+// EXPORT
+// ==========================================
+
+module.exports = {
+  pool,
+  initializeDatabase
+};
