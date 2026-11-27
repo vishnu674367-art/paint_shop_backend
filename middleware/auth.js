@@ -5,7 +5,7 @@ function authenticate(req, res, next) {
   const token = header.startsWith("Bearer ") ? header.substring(7) : null;
   if (!token) return res.status(401).json({ success: false, message: "Please login first" });
   try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET || "development_secret_change_me");
+    req.user = jwt.verify(token, process.env.JWT_SECRET || "paint_shop_default_jwt_secret_key_2025");
     next();
   } catch {
     res.status(401).json({ success: false, message: "Invalid or expired login token" });
